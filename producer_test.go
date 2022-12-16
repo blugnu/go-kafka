@@ -1,0 +1,433 @@
+package kafka
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/blugnu/kafka/api"
+	"github.com/confluentinc/confluent-kafka-go/kafka"
+)
+
+func TestThatCheckEventReturnsMessageForASuccessfulDelivery(t *testing.T) {
+	// ARRANGE
+	topic := "topic"
+	wantedError := error(nil)
+	wantedMessage := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &topic,
+			Partition: 1,
+			Offset:    1,
+		},
+		Key:   []byte("key"),
+		Value: []byte("value"),
+	}
+
+	// ACT
+	gotMessage, gotError := CheckEvent(wantedMessage)
+
+	// ASSERT
+	if gotError != wantedError {
+		t.Errorf("wanted error %v, got %v", wantedError, gotError)
+	}
+	if wantedMessage != gotMessage {
+		t.Errorf("wanted message %v, got %v", wantedMessage, gotMessage)
+	}
+}
+
+func TestThatCheckEventReturnsMessageAndErrorForMessageError(t *testing.T) {
+	// ARRANGE
+	topic := "topic"
+	wantedError := errors.New("error")
+	wantedMessage := &kafka.Message{
+		TopicPartition: kafka.TopicPartition{
+			Topic:     &topic,
+			Partition: 1,
+			Offset:    1,
+			Error:     wantedError,
+		},
+		Key:   []byte("key"),
+		Value: []byte("value"),
+	}
+
+	// ACT
+	gotMessage, gotError := CheckEvent(wantedMessage)
+
+	// ASSERT
+	if gotError != wantedError {
+		t.Errorf("wanted error %v, got %v", wantedError, gotError)
+	}
+	if wantedMessage != gotMessage {
+		t.Errorf("wanted message %v, got %v", wantedMessage, gotMessage)
+	}
+}
+
+func TestThatCheckEventReturnsErrorForKafkaError(t *testing.T) {
+	// ARRANGE
+	wanted := kafka.NewError(kafka.ErrBrokerNotAvailable, "error", true)
+
+	// ACT
+	msg, got := CheckEvent(wanted)
+
+	// ASSERT
+	if wanted != got {
+		t.Errorf("wanted %v, got %v", wanted, got)
+	}
+	if msg != nil {
+		t.Errorf("unexpected message returned: %v", msg)
+	}
+}
+
+func TestThatNewProducerReturnsErrorsCorrectly(t *testing.T) {
+	// ARRANGE
+	wanted := errors.New("error")
+
+	api, mock := api.MockProducerApi()
+	mock.Api().Create = func(cfg *kafka.ConfigMap) error { return wanted }
+
+	cfg := NewConfig().Using(api)
+
+	// ACT
+	producer, got := NewProducer(cfg)
+
+	// ASSERT
+	if producer != nil {
+		t.Fatalf("wanted a nil producer, got %T", producer)
+	}
+
+	if wanted != got {
+		t.Fatalf("wanted error %T, got %T", wanted, got)
+	}
+}
+
+func TestThatNewProducerFromConfigWithNoHooksIsHookedCorrectly(t *testing.T) {
+	// ARRANGE
+	// cfg := NewConfig().WithNoBroker()
+
+	// ACT
+	// p, err := NewProducer(cfg)
+	// if err != nil {
+	// 	t.Fatalf("unexpected error: %v", err)
+	// }
+
+	// ASSERT
+	// wanted := reflect.TypeOf(&api.ProducerApi)
+	// got := reflect.TypeOf(p.api)
+	// if got != wanted {
+	// 	t.Errorf("wanted %T, got %T", wanted, got)
+	// }
+}
+
+func TestThatNewProducerPanicsIfConfigHasConsumerHooks(t *testing.T) {
+	// ARRANGE
+	api, _ := api.MockConsumerApi()
+	cfg := NewConfig().Using(api)
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("did not panic")
+		}
+	}()
+
+	// ACT
+	_, err := NewProducer(cfg)
+
+	// ASSERT (see above)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestThatCloseCallsCloseOnTheProducer(t *testing.T) {
+
+	closeCalled := false
+
+	// ARRANGE
+	api, mock := api.MockProducerApi()
+	mock.Api().Close = func() { closeCalled = true }
+
+	cfg := NewConfig().Using(api)
+
+	// ACT
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	p.Close()
+
+	// ASSERT
+	if closeCalled != true {
+		t.Error("Close() was not called")
+	}
+}
+
+func TestThatFlushCallsFlushOnTheProducer(t *testing.T) {
+
+	flushCalled := false
+
+	// ARRANGE
+	api, mock := api.MockProducerApi()
+	mock.Api().Flush = func(timeoutMs int) int { flushCalled = true; return 0 }
+
+	cfg := NewConfig().Using(api)
+
+	// ACT
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	p.Flush(100)
+
+	// ASSERT
+	if flushCalled != true {
+		t.Error("Flush() was not called")
+	}
+}
+
+func TestThatFlushAllCallsFlushOnTheProducerUntilZeroIsReturned(t *testing.T) {
+
+	flushCalls := 0
+	flushesRemaining := 10
+
+	// ARRANGE
+	api, mock := api.MockProducerApi()
+	mock.Api().Flush = func(timeoutMs int) int {
+		flushCalls++
+		flushesRemaining -= 1
+		return flushesRemaining
+	}
+
+	cfg := NewConfig().Using(api)
+
+	// ACT
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	p.FlushAll()
+
+	// ASSERT
+	wanted := 10
+	got := flushCalls
+	if wanted != got {
+		t.Errorf("wanted %d Flush() calls, got %d", wanted, got)
+	}
+
+	wanted = 0
+	got = flushesRemaining
+	if wanted != got {
+		t.Errorf("wanted %d flushes remaining, got %d", wanted, got)
+	}
+}
+
+func TestThatProducerMustProduceReturnsSuccessfullyDeliveredMessage(t *testing.T) {
+	// ARRANGE
+	topic := "test"
+	msg := kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic},
+		Value:          []byte("test value"),
+	}
+	wanted := msg
+	wanted.TopicPartition.Partition = 1
+	wanted.TopicPartition.Offset = 1
+
+	api, mock := api.MockProducerApi()
+	mock.Api().Produce = func(m *kafka.Message, c chan kafka.Event) error {
+		go func() {
+			m.TopicPartition.Partition = 1
+			m.TopicPartition.Offset = 1
+			c <- m
+		}()
+		return nil
+	}
+
+	cfg := NewConfig().Using(api)
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// ACT
+	got, err := p.MustProduce(context.Background(), &msg)
+
+	// ASSERT
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if got.TopicPartition != wanted.TopicPartition {
+		t.Errorf("wanted %v, got %v", wanted, got)
+	}
+}
+func TestThatProducerMustProduceReturnsMessageDeliveryErrorWithFailedMessage(t *testing.T) {
+	// ARRANGE
+	topic := "test"
+	deliveryErr := errors.New("delivery failed")
+	msg := kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic},
+		Value:          []byte("test value"),
+	}
+	wanted := msg
+	wanted.TopicPartition.Error = deliveryErr
+
+	api, mock := api.MockProducerApi()
+	mock.Api().Produce = func(m *kafka.Message, c chan kafka.Event) error {
+		go func() {
+			m.TopicPartition.Error = deliveryErr
+			c <- m
+		}()
+		return nil
+	}
+
+	cfg := NewConfig().Using(api)
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// ACT
+	got, err := p.MustProduce(context.Background(), &msg)
+
+	// ASSERT
+	if err == nil {
+		t.Errorf("expected error not returned, wanted %q", err)
+	}
+
+	if got.TopicPartition != wanted.TopicPartition {
+		t.Errorf("wanted %v, got %v", wanted, got)
+	}
+}
+
+func TestThatProducerMustProduceReturnsProducerErrorWithNoMessage(t *testing.T) {
+	// ARRANGE
+	topic := "test"
+	deliveryError := kafka.NewError(101, "retrying", false)
+	msg := kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic},
+		Value:          []byte("test value"),
+	}
+
+	api, mock := api.MockProducerApi()
+	mock.Api().Produce = func(m *kafka.Message, c chan kafka.Event) error {
+		go func() {
+			c <- deliveryError
+		}()
+		return nil
+	}
+
+	cfg := NewConfig().Using(api)
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// ACT
+	deliveredMsg, err := p.MustProduce(context.Background(), &msg)
+
+	// ASSERT
+	if deliveredMsg != nil {
+		t.Errorf("unexpected message returned: %v", deliveredMsg)
+	}
+
+	if got, ok := err.(kafka.Error); !ok {
+		wanted := deliveryError
+		t.Errorf("wanted %T, got %T", wanted, got)
+	}
+
+	wanted := deliveryError.Error()
+	got := err.Error()
+	if wanted != got {
+		t.Errorf("wanted %v, got %v", wanted, got)
+	}
+}
+
+type fakeevent struct{}
+
+func (*fakeevent) String() string { return "fake event" }
+
+func TestThatProducerMustProduceReturnsUnexpectedEventsWithNoMessage(t *testing.T) {
+	// ARRANGE
+	topic := "test"
+	var deliveryError kafka.Event = &fakeevent{}
+	msg := kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic},
+		Value:          []byte("test value"),
+	}
+
+	api, mock := api.MockProducerApi()
+	mock.Api().Produce = func(m *kafka.Message, c chan kafka.Event) error {
+		go func() {
+			c <- deliveryError
+		}()
+		return nil
+	}
+
+	cfg := NewConfig().Using(api)
+	p, err := NewProducer(cfg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// ACT
+	deliveredMsg, err := p.MustProduce(context.Background(), &msg)
+
+	// ASSERT
+	if deliveredMsg != nil {
+		t.Errorf("unexpected message returned: %v", deliveredMsg)
+	}
+
+	if got, ok := err.(UnexpectedDeliveryEvent); !ok {
+		wanted := UnexpectedDeliveryEvent{}
+		t.Errorf("wanted %T, got %T", wanted, got)
+	}
+
+	wanted := UnexpectedDeliveryEvent{event: deliveryError}.Error()
+	got := err.(UnexpectedDeliveryEvent).Error()
+	if got != wanted {
+		t.Errorf("wanted %q, got %q", wanted, got)
+	}
+}
+
+func TestThatMustProduceCreatesAndClosesTemporaryProducerWithSpecifiedConfig(t *testing.T) {
+
+	sentinelFound := false
+	closeCalled := false
+
+	// ARRANGE
+	topic := "test"
+	msg := kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic},
+		Value:          []byte("test value"),
+	}
+
+	api, mock := api.MockProducerApi()
+	mock.Api().Close = func() { closeCalled = true }
+	mock.Api().Create = func(cfg *kafka.ConfigMap) error {
+		v, _ := cfg.Get("sentinel", "")
+		sentinelFound = v == "value"
+		return nil
+	}
+	mock.Api().Produce = func(m *kafka.Message, c chan kafka.Event) error {
+		go func() {
+			c <- &msg
+		}()
+		return nil
+	}
+
+	cfg := NewConfig().Using(api).
+		With("sentinel", "value")
+
+	// ACT
+	_, err := MustProduce(context.Background(), cfg, &msg)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// ASSERT
+	if !sentinelFound {
+		t.Error("producer was not created with expected configmap")
+	}
+
+	if !closeCalled {
+		t.Error("producer was not closed")
+	}
+}
