@@ -13,3 +13,5 @@
 # go-kafka
 
 Provides a configuration driven kafka Consumer and Producer atop the Confluent Kafka package.
+
+TODO: Rename as github/blugnu/panza : https://en.wikipedia.org/wiki/The_Truth_about_Sancho_Panza

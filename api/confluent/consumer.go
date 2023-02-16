@@ -1,48 +1,30 @@
-package api
+package confluent
 
 import (
 	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/kafka"
+	"github.com/blugnu/logger"
+	confluent "github.com/confluentinc/confluent-kafka-go/kafka"
+
+	"github.com/blugnu/kafka/api"
 )
 
-type consumer struct {
-	*kafka.Consumer
+type ConsumerFuncs struct {
+	Assign          func([]confluent.TopicPartition) error
+	Close           func() error
+	CommitOffsets   func([]confluent.TopicPartition) ([]confluent.TopicPartition, error)
+	Logs            func() chan confluent.LogEvent
+	Position        func([]confluent.TopicPartition) ([]confluent.TopicPartition, error)
+	ReadMessage     func(time.Duration) (*confluent.Message, error)
+	Seek            func(confluent.TopicPartition, int) error
+	SubscribeTopics func([]string, confluent.RebalanceCb) error
+	Unassign        func() error
 }
 
-var _consumer = &consumer{}
-
-func ConfluentConsumerApi() ConsumerApi {
-	return _consumer
-}
-
-func (c *consumer) Close() error {
-	return c.Consumer.Close()
-}
-
-func (c *consumer) Commit(msg *kafka.Message) ([]kafka.TopicPartition, error) {
-	return c.CommitMessage(msg)
-}
-
-func (c *consumer) CommitOffset(tpa []kafka.TopicPartition) ([]kafka.TopicPartition, error) {
-	return c.CommitOffsets(tpa)
-}
-
-func (c *consumer) Create(cfg *kafka.ConfigMap) error {
-	if cfg == nil {
-		c.Consumer = &kafka.Consumer{}
-		return nil
-	}
-
-	var err error
-	c.Consumer, err = kafka.NewConsumer(cfg)
-	return err
-}
-
-func (c *consumer) Subscribe(ta []string, rcb kafka.RebalanceCb) error {
-	return c.SubscribeTopics(ta, rcb)
-}
-
-func (c *consumer) ReadMessage(t time.Duration) (*kafka.Message, error) {
-	return c.Consumer.ReadMessage(t)
+type Consumer struct {
+	*confluent.Consumer
+	funcs       *ConsumerFuncs
+	Log         *logger.Base
+	OnRebalance api.RebalanceEventHandler
+	AdminClient
 }
